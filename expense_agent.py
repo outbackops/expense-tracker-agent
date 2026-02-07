@@ -191,8 +191,10 @@ Description: <description>
 Category: <category>
 AUD Equivalent: <aud_amount> AUD
 
-File saved: expense_reports/expense_report_YYYYMMDD_HHMMSS.txt
+File saved: expense_report_YYYYMMDD_HHMMSS.txt
 ```
+
+**IMPORTANT**: The file download link will automatically appear in the response. Do NOT add a fake path prefix like "expense_reports/" - just show the actual filename created by Code Interpreter.
 
 For foreign currencies, include exchange info:
 ```
