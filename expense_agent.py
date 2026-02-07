@@ -1,0 +1,198 @@
+# Expense Tracking Agent for Azure AI Foundry with Code Interpreter & Web Search
+# Before running:
+#    pip install --pre azure-ai-projects>=2.0.0b1
+#    pip install azure-identity
+
+from azure.identity import AzureCliCredential
+from azure.ai.projects import AIProjectClient
+from azure.ai.projects.models import (
+    PromptAgentDefinition,
+    CodeInterpreterTool,
+    WebSearchPreviewTool,
+)
+import os
+from datetime import datetime
+
+# Add Azure CLI to PATH for credential lookup
+os.environ["PATH"] = r"C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin" + os.pathsep + os.environ.get("PATH", "")
+
+# Configuration
+USER_ENDPOINT = "https://foundry-rj-1-resource.services.ai.azure.com/api/projects/foundry-rj-1"
+AGENT_NAME = "expense-tracker-agent-v3"
+MODEL_DEPLOYMENT_NAME = "gpt-4o"  # Update this to your deployed model name
+
+# Initialize the project client
+project_client = AIProjectClient(
+    endpoint=USER_ENDPOINT,
+    credential=AzureCliCredential(),
+)
+
+# Agent instructions for expense parsing with Code Interpreter and Web Search
+AGENT_INSTRUCTIONS = """You are an expense tracking assistant with file creation and web search capabilities. Your job is to:
+
+1. Parse expense information from user messages
+2. Extract the amount, currency, and purpose/description
+3. Use Web Search (Bing) to get real-time information when relevant (e.g., currency conversion rates, vendor information, tax rules)
+4. Use the Code Interpreter tool to create a text file with the expense report
+
+DEFAULT CURRENCY: If no currency is specified, assume AUD (Australian Dollar).
+
+WEB SEARCH CAPABILITIES:
+- Use Bing search when users mention foreign currencies to get current exchange rates
+- Search for vendor/merchant information if user mentions a company name
+- Look up tax deduction rules if user asks about expense categories
+- Get real-time information about prices, locations, or services
+
+IMPORTANT: For EVERY expense the user provides, you MUST use the Code Interpreter to:
+1. Create a text file named 'expense_report_<timestamp>.txt'
+2. Write the structured expense data to the file
+3. Provide the file for download
+
+DO NOT ask for clarification if the user provides an amount and description. Just proceed with AUD if no currency is mentioned.
+
+The file content should follow this EXACT format:
+---EXPENSE REPORT---
+Amount: <extracted amount>
+Currency: <extracted currency>
+Description: <extracted purpose/description>
+Date: <current date in YYYY-MM-DD format>
+---END REPORT---
+
+Example Python code to use in Code Interpreter:
+```python
+from datetime import datetime
+
+amount = "50"
+currency = "USD"
+description = "lunch"
+date = datetime.now().strftime("%Y-%m-%d")
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+content = f\"\"\"---EXPENSE REPORT---
+Amount: {amount}
+Currency: {currency}
+Description: {description}
+Date: {date}
+---END REPORT---\"\"\"
+
+filename = f"expense_report_{timestamp}.txt"
+with open(filename, "w") as f:
+    f.write(content)
+print(f"File created: {filename}")
+```
+
+After creating the file, confirm to the user that the expense was recorded and the file is available for download.
+
+Examples of expense parsing:
+- "I spent 50 USD on lunch" → Amount=50, Currency=USD, Description=lunch
+- "expense of 100 EUR for office supplies" → Amount=100, Currency=EUR, Description=office supplies
+- "paid 25 dollars for taxi" → Amount=25, Currency=USD, Description=taxi
+- "75 pounds for dinner" → Amount=75, Currency=GBP, Description=dinner
+
+If the user's message is unclear, ask for clarification about the amount, currency, or purpose."""
+
+def create_expense_agent():
+    """Create or update the expense tracking agent with Code Interpreter and Web Search tools."""
+    print("Creating/updating expense tracking agent with Code Interpreter & Web Search...")
+    
+    agent = project_client.agents.create_version(
+        agent_name=AGENT_NAME,
+        definition=PromptAgentDefinition(
+            model=MODEL_DEPLOYMENT_NAME,
+            instructions=AGENT_INSTRUCTIONS,
+            tools=[
+                CodeInterpreterTool(),  # Enable Code Interpreter for file creation
+                WebSearchPreviewTool(),  # Enable Web Search (no connection required)
+            ],
+        ),
+    )
+    
+    print(f"Agent created: {agent.name}")
+    print(f"Tools enabled: Code Interpreter, Web Search")
+    return agent
+
+
+def process_expense(user_input):
+    """Process an expense input and get agent response with file generation."""
+    openai_client = project_client.get_openai_client()
+    
+    # Create the agent first
+    agent = create_expense_agent()
+    
+    # Get response from the agent (Code Interpreter will create the file)
+    response = openai_client.responses.create(
+        input=[{"role": "user", "content": user_input}],
+        extra_body={"agent": {"name": agent.name, "type": "agent_reference"}},
+    )
+    
+    response_text = response.output_text
+    print(f"\nAgent Response:\n{response_text}")
+    
+    # Check if there are any files generated by Code Interpreter
+    if hasattr(response, 'output') and response.output:
+        for item in response.output:
+            if hasattr(item, 'content'):
+                for content_item in item.content:
+                    if hasattr(content_item, 'file_id') and content_item.file_id:
+                        print(f"\n📎 File generated with ID: {content_item.file_id}")
+                        # Download the file
+                        try:
+                            download_generated_file(content_item.file_id)
+                        except Exception as e:
+                            print(f"Note: Could not download file locally: {e}")
+    
+    return response_text
+
+def download_generated_file(file_id):
+    """Download a file generated by Code Interpreter."""
+    output_dir = "expense_reports"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Get file info and content
+    file_content = project_client.agents.get_file_content(file_id)
+    file_info = project_client.agents.get_file(file_id)
+    
+    filename = file_info.filename if hasattr(file_info, 'filename') else f"expense_{file_id}.txt"
+    filepath = os.path.join(output_dir, filename)
+    
+    with open(filepath, "wb") as f:
+        for chunk in file_content:
+            f.write(chunk)
+    
+    print(f"✓ File downloaded to: {filepath}")
+    return filepath
+
+def main():
+    """Main function to run the expense agent."""
+    print("=" * 60)
+    print("Expense Tracking Agent")
+    print("(with Code Interpreter + Web Search)")
+    print("=" * 60)
+    print("\nEnter your expense information (or 'quit' to exit)")
+    print("Examples:")
+    print("  - 'I have an expense of 50 USD for lunch'")
+    print("  - '100 EUR for office supplies, convert to USD'")
+    print("  - '75 pounds for taxi in London'")
+    print("\nThe agent can search the web for real-time info (e.g., exchange rates)")
+    print("and will create a text file for each expense.")
+    print("-" * 60)
+    
+    while True:
+        user_input = input("\nYour expense: ").strip()
+        
+        if user_input.lower() in ['quit', 'exit', 'q']:
+            print("Goodbye!")
+            break
+        
+        if not user_input:
+            print("Please enter an expense description.")
+            continue
+        
+        try:
+            response = process_expense(user_input)
+            print(f"\n✓ Expense processed!")
+        except Exception as e:
+            print(f"Error processing expense: {e}")
+
+if __name__ == "__main__":
+    main()

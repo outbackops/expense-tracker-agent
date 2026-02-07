@@ -1,0 +1,6 @@
+---EXPENSE REPORT---
+Amount: 23
+Currency: USD
+Description: lunch
+Date: 2023-10-05
+---END REPORT---
